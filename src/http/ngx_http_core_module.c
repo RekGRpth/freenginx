@@ -2456,6 +2456,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
     sr->internal = 1;
 
     sr->discard_body = r->discard_body;
+    sr->discarding_body = r->discarding_body;
     sr->expect_tested = 1;
     sr->main_filter_need_in_memory = r->main_filter_need_in_memory;
 
@@ -2595,6 +2596,8 @@ ngx_http_named_location(ngx_http_request_t *r, ngx_str_t *name)
             ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                            "using location: %V \"%V?%V\"",
                            name, &r->uri, &r->args);
+
+            r->connection->log->action = NULL;
 
             r->internal = 1;
             r->content_handler = NULL;

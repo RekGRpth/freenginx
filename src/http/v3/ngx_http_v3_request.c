@@ -1250,6 +1250,7 @@ ngx_http_v3_read_request_body(ngx_http_request_t *r)
     if (rb->rest == 0 && rb->last_saved) {
         /* the whole request body was pre-read */
         r->request_body_no_buffering = 0;
+        r->connection->log->action = NULL;
         rb->post_handler(r);
         return NGX_OK;
     }
@@ -1280,6 +1281,8 @@ ngx_http_v3_read_client_request_body_handler(ngx_http_request_t *r)
     ngx_int_t  rc;
 
     if (r->connection->read->timedout) {
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, NGX_ETIMEDOUT,
+                      "client timed out");
         r->connection->timedout = 1;
         ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
         return;
@@ -1288,6 +1291,10 @@ ngx_http_v3_read_client_request_body_handler(ngx_http_request_t *r)
     rc = ngx_http_v3_do_read_client_request_body(r);
 
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+
+        r->discard_body = 1;
+        r->request_body->bufs = NULL;
+
         ngx_http_finalize_request(r, rc);
     }
 }
@@ -1299,6 +1306,8 @@ ngx_http_v3_read_unbuffered_request_body(ngx_http_request_t *r)
     ngx_int_t  rc;
 
     if (r->connection->read->timedout) {
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, NGX_ETIMEDOUT,
+                      "client timed out");
         r->connection->timedout = 1;
         return NGX_HTTP_REQUEST_TIME_OUT;
     }
@@ -1472,6 +1481,7 @@ ngx_http_v3_do_read_client_request_body(ngx_http_request_t *r)
 
     if (!r->request_body_no_buffering) {
         r->read_event_handler = ngx_http_block_reading;
+        r->connection->log->action = NULL;
         rb->post_handler(r);
     }
 
@@ -1482,7 +1492,6 @@ ngx_http_v3_do_read_client_request_body(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_v3_request_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
-    off_t                      max;
     size_t                     size;
     u_char                    *p;
     ngx_int_t                  rc;
@@ -1508,14 +1517,6 @@ ngx_http_v3_request_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
 
         rb->rest = cscf->large_client_header_buffers.size;
-    }
-
-    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-
-    max = r->headers_in.content_length_n;
-
-    if (max == -1 && clcf->client_max_body_size) {
-        max = clcf->client_max_body_size;
     }
 
     out = NULL;
@@ -1575,13 +1576,30 @@ ngx_http_v3_request_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
                 /* rc == NGX_OK */
 
-                if (max != -1 && (uint64_t) (max - rb->received) < st->length) {
+                clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+                if (clcf->client_max_body_size
+                    && (uint64_t) (clcf->client_max_body_size - rb->received)
+                       < st->length)
+                {
                     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                                   "client intended to send too large "
                                   "body: %O+%ui bytes",
                                   rb->received, st->length);
 
                     return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
+                }
+
+                if (r->headers_in.content_length_n != -1
+                    && (uint64_t) (r->headers_in.content_length_n
+                                   - rb->received)
+                       < st->length)
+                {
+                    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                                  "client intended to send body data "
+                                  "larger than declared");
+
+                    return NGX_HTTP_BAD_REQUEST;
                 }
 
                 continue;
