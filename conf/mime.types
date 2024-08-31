@@ -2,13 +2,14 @@
 types {
     text/html                                        html htm shtml;
     text/css                                         css;
+    text/javascript                                  js mjs;
     text/xml                                         xml;
     image/gif                                        gif;
     image/jpeg                                       jpeg jpg;
-    application/javascript                           js;
     application/atom+xml                             atom;
     application/rss+xml                              rss;
 
+    text/markdown                                    md markdown;
     text/mathml                                      mml;
     text/plain                                       txt;
     text/vnd.sun.j2me.app-descriptor                 jad;

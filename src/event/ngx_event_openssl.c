@@ -4553,11 +4553,7 @@ ngx_ssl_ticket_key_callback(ngx_ssl_conn_t *ssl_conn,
         return -1;
     }
 
-#ifdef OPENSSL_NO_SHA256
-    digest = EVP_sha1();
-#else
     digest = EVP_sha256();
-#endif
 
     keys = SSL_CTX_get_ex_data(ssl_ctx, ngx_ssl_ticket_keys_index);
     if (keys == NULL) {
@@ -5732,6 +5728,42 @@ ngx_ssl_get_fingerprint(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
     }
 
     if (!X509_digest(cert, EVP_sha1(), buf, &len)) {
+        ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "X509_digest() failed");
+        X509_free(cert);
+        return NGX_ERROR;
+    }
+
+    s->len = 2 * len;
+    s->data = ngx_pnalloc(pool, 2 * len);
+    if (s->data == NULL) {
+        X509_free(cert);
+        return NGX_ERROR;
+    }
+
+    ngx_hex_dump(s->data, buf, len);
+
+    X509_free(cert);
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_ssl_get_fingerprint_sha256(ngx_connection_t *c, ngx_pool_t *pool,
+    ngx_str_t *s)
+{
+    X509          *cert;
+    unsigned int   len;
+    u_char         buf[EVP_MAX_MD_SIZE];
+
+    s->len = 0;
+
+    cert = SSL_get_peer_certificate(c->ssl->connection);
+    if (cert == NULL) {
+        return NGX_OK;
+    }
+
+    if (!X509_digest(cert, EVP_sha256(), buf, &len)) {
         ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "X509_digest() failed");
         X509_free(cert);
         return NGX_ERROR;
