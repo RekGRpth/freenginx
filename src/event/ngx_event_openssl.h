@@ -259,6 +259,7 @@ ngx_ssl_session_t *ngx_ssl_get0_session(ngx_connection_t *c);
      || n == X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE)
 
 ngx_int_t ngx_ssl_check_host(ngx_connection_t *c, ngx_str_t *name);
+ngx_int_t ngx_ssl_check_verify_context(ngx_connection_t *c, ngx_ssl_t *ssl);
 
 
 ngx_int_t ngx_ssl_get_protocol(ngx_connection_t *c, ngx_pool_t *pool,
@@ -332,6 +333,7 @@ extern int  ngx_ssl_server_conf_index;
 extern int  ngx_ssl_session_cache_index;
 extern int  ngx_ssl_ticket_keys_index;
 extern int  ngx_ssl_ocsp_index;
+extern int  ngx_ssl_trusted_list_index;
 extern int  ngx_ssl_certificate_index;
 extern int  ngx_ssl_next_certificate_index;
 extern int  ngx_ssl_certificate_name_index;

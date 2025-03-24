@@ -131,6 +131,7 @@ int  ngx_ssl_server_conf_index;
 int  ngx_ssl_session_cache_index;
 int  ngx_ssl_ticket_keys_index;
 int  ngx_ssl_ocsp_index;
+int  ngx_ssl_trusted_list_index;
 int  ngx_ssl_certificate_index;
 int  ngx_ssl_next_certificate_index;
 int  ngx_ssl_certificate_name_index;
@@ -253,6 +254,14 @@ ngx_ssl_init(ngx_log_t *log)
 
     ngx_ssl_ocsp_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
     if (ngx_ssl_ocsp_index == -1) {
+        ngx_ssl_error(NGX_LOG_ALERT, log, 0,
+                      "SSL_CTX_get_ex_new_index() failed");
+        return NGX_ERROR;
+    }
+
+    ngx_ssl_trusted_list_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL,
+                                                          NULL);
+    if (ngx_ssl_trusted_list_index == -1) {
         ngx_ssl_error(NGX_LOG_ALERT, log, 0,
                       "SSL_CTX_get_ex_new_index() failed");
         return NGX_ERROR;
@@ -951,6 +960,8 @@ ngx_int_t
 ngx_ssl_trusted_certificate(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *cert,
     ngx_int_t depth)
 {
+    STACK_OF(X509_NAME)  *list;
+
     SSL_CTX_set_verify(ssl->ctx, SSL_CTX_get_verify_mode(ssl->ctx),
                        ngx_ssl_verify_callback);
 
@@ -979,6 +990,24 @@ ngx_ssl_trusted_certificate(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *cert,
      */
 
     ERR_clear_error();
+
+    if (SSL_CTX_get_verify_mode(ssl->ctx) != SSL_VERIFY_PEER) {
+        return NGX_OK;
+    }
+
+    list = SSL_load_client_CA_file((char *) cert->data);
+
+    if (list == NULL) {
+        ngx_ssl_error(NGX_LOG_EMERG, ssl->log, 0,
+                      "SSL_load_client_CA_file(\"%s\") failed", cert->data);
+        return NGX_ERROR;
+    }
+
+    if (SSL_CTX_set_ex_data(ssl->ctx, ngx_ssl_trusted_list_index, list) == 0) {
+        ngx_ssl_error(NGX_LOG_EMERG, ssl->log, 0,
+                      "SSL_CTX_set_ex_data() failed");
+        return NGX_ERROR;
+    }
 
     return NGX_OK;
 }
@@ -3857,6 +3886,28 @@ ngx_ssl_session_id_context(ngx_ssl_t *ssl, ngx_str_t *sess_ctx,
         }
     }
 
+    list = SSL_CTX_get_ex_data(ssl->ctx, ngx_ssl_trusted_list_index);
+
+    if (list != NULL) {
+        n = sk_X509_NAME_num(list);
+
+        for (i = 0; i < n; i++) {
+            name = sk_X509_NAME_value(list, i);
+
+            if (X509_NAME_digest(name, EVP_sha1(), buf, &len) == 0) {
+                ngx_ssl_error(NGX_LOG_EMERG, ssl->log, 0,
+                              "X509_NAME_digest() failed");
+                goto failed;
+            }
+
+            if (EVP_DigestUpdate(md, buf, len) == 0) {
+                ngx_ssl_error(NGX_LOG_EMERG, ssl->log, 0,
+                              "EVP_DigestUpdate() failed");
+                goto failed;
+            }
+        }
+    }
+
     if (EVP_DigestFinal_ex(md, buf, &len) == 0) {
         ngx_ssl_error(NGX_LOG_EMERG, ssl->log, 0,
                       "EVP_DigestFinal_ex() failed");
@@ -4826,7 +4877,8 @@ ngx_ssl_cleanup_ctx(void *data)
 {
     ngx_ssl_t  *ssl = data;
 
-    X509  *cert, *next;
+    X509                 *cert, *next;
+    STACK_OF(X509_NAME)  *list;
 
     cert = SSL_CTX_get_ex_data(ssl->ctx, ngx_ssl_certificate_index);
 
@@ -4834,6 +4886,12 @@ ngx_ssl_cleanup_ctx(void *data)
         next = X509_get_ex_data(cert, ngx_ssl_next_certificate_index);
         X509_free(cert);
         cert = next;
+    }
+
+    list = SSL_CTX_get_ex_data(ssl->ctx, ngx_ssl_trusted_list_index);
+
+    if (list) {
+        sk_X509_NAME_pop_free(list, X509_NAME_free);
     }
 
     SSL_CTX_free(ssl->ctx);
@@ -5007,6 +5065,92 @@ ngx_ssl_check_name(ngx_str_t *name, ASN1_STRING *pattern)
 }
 
 #endif
+
+
+ngx_int_t
+ngx_ssl_check_verify_context(ngx_connection_t *c, ngx_ssl_t *ssl)
+{
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+
+    SSL_CTX     *ctx;
+    const char  *name;
+
+    /*
+     * Check current SSL context to match the one where the certificate
+     * verification happened.
+     *
+     * If certificate verification was in the default server block without
+     * a server name, all contexts are allowed, as non-SNI clients are
+     * allowed to request other virtual servers.
+     *
+     * If there is no context in the current server block, verification
+     * is expected to happen in the default server.
+     */
+
+    ctx = SSL_get_SSL_CTX(c->ssl->connection);
+    name = SSL_get_servername(c->ssl->connection, TLSEXT_NAMETYPE_host_name);
+
+    if (ctx == ssl->ctx) {
+        goto next;
+    }
+
+    if (ctx == c->ssl->session_ctx && (ssl->ctx == NULL || name == NULL)) {
+        goto next;
+    }
+
+    return NGX_ERROR;
+
+next:
+
+#if (defined TLS1_3_VERSION                                                   \
+     && !defined LIBRESSL_VERSION_NUMBER                                      \
+     && !defined OPENSSL_IS_BORINGSSL)
+    {
+    const char   *orig;
+    SSL_SESSION  *sess;
+
+    /*
+     * When using TLSv1.3, OpenSSL 1.1.1e+ allows session resumption
+     * with names other than initially negotiated.  We use
+     * SSL_SESSION_get0_hostname() to prevent use of certificates
+     * verified in different contexts.
+     */
+
+    if (SSL_version(c->ssl->connection) != TLS1_3_VERSION) {
+        return NGX_OK;
+    }
+
+    if (!SSL_session_reused(c->ssl->connection)) {
+        return NGX_OK;
+    }
+
+    sess = SSL_get0_session(c->ssl->connection);
+
+    if (sess == NULL) {
+        return NGX_OK;
+    }
+
+    /*
+     * If a server name was originally negotiated, it shouldn't be changed
+     * or dropped.  If there was no server name, it is not checked, since
+     * non-SNI clients are allowed to request other virtual servers.
+     */
+
+    orig = SSL_SESSION_get0_hostname(sess);
+
+    if (orig == NULL) {
+        return NGX_OK;
+    }
+
+    if (name == NULL || ngx_strcmp(name, orig) != 0) {
+        return NGX_ERROR;
+    }
+    }
+#endif
+#endif
+
+    return NGX_OK;
+}
 
 
 ngx_int_t
