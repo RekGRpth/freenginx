@@ -94,10 +94,6 @@ static char *ngx_stream_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd,
 #if (NGX_STREAM_SSL)
 
 static ngx_int_t ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s);
-static char *ngx_stream_proxy_ssl_password_file(ngx_conf_t *cf,
-    ngx_command_t *cmd, void *conf);
-static char *ngx_stream_proxy_ssl_conf_command_check(ngx_conf_t *cf, void *post,
-    void *data);
 static void ngx_stream_proxy_ssl_init_connection(ngx_stream_session_t *s);
 static void ngx_stream_proxy_ssl_handshake(ngx_connection_t *pc);
 static void ngx_stream_proxy_ssl_save_session(ngx_connection_t *c);
@@ -107,6 +103,10 @@ static ngx_int_t ngx_stream_proxy_merge_ssl(ngx_conf_t *cf,
     ngx_stream_proxy_srv_conf_t *conf, ngx_stream_proxy_srv_conf_t *prev);
 static ngx_int_t ngx_stream_proxy_set_ssl(ngx_conf_t *cf,
     ngx_stream_proxy_srv_conf_t *pscf);
+static char *ngx_stream_proxy_ssl_password_file(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static char *ngx_stream_proxy_ssl_conf_command_check(ngx_conf_t *cf, void *post,
+    void *data);
 
 
 static ngx_conf_bitmask_t  ngx_stream_proxy_ssl_protocols[] = {
@@ -929,6 +929,10 @@ ngx_stream_proxy_init_upstream(ngx_stream_session_t *s)
     pc->read->handler = ngx_stream_proxy_upstream_handler;
     pc->write->handler = ngx_stream_proxy_upstream_handler;
 
+    if (pc->write->timer_set) {
+        ngx_del_timer(pc->write);
+    }
+
     if (pc->read->ready) {
         ngx_post_event(pc->read, &ngx_posted_events);
     }
@@ -977,8 +981,11 @@ ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s)
 
         pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_proxy_module);
 
-        ngx_add_timer(pc->write, pscf->timeout);
+        if (!pc->write->timer_set) {
+            ngx_add_timer(pc->write, pscf->connect_timeout);
+        }
 
+        pc->read->handler = ngx_stream_proxy_connect_handler;
         pc->write->handler = ngx_stream_proxy_connect_handler;
 
         return NGX_AGAIN;
@@ -1007,41 +1014,6 @@ ngx_stream_proxy_send_proxy_protocol(ngx_stream_session_t *s)
     }
 
     return NGX_OK;
-}
-
-
-static char *
-ngx_stream_proxy_ssl_password_file(ngx_conf_t *cf, ngx_command_t *cmd,
-    void *conf)
-{
-    ngx_stream_proxy_srv_conf_t *pscf = conf;
-
-    ngx_str_t  *value;
-
-    if (pscf->ssl_passwords != NGX_CONF_UNSET_PTR) {
-        return "is duplicate";
-    }
-
-    value = cf->args->elts;
-
-    pscf->ssl_passwords = ngx_ssl_read_password_file(cf, &value[1]);
-
-    if (pscf->ssl_passwords == NULL) {
-        return NGX_CONF_ERROR;
-    }
-
-    return NGX_CONF_OK;
-}
-
-
-static char *
-ngx_stream_proxy_ssl_conf_command_check(ngx_conf_t *cf, void *post, void *data)
-{
-#ifndef SSL_CONF_FLAG_FILE
-    return "is not supported on this platform";
-#else
-    return NGX_CONF_OK;
-#endif
 }
 
 
@@ -1143,10 +1115,6 @@ ngx_stream_proxy_ssl_handshake(ngx_connection_t *pc)
                               &u->ssl_name);
                 goto failed;
             }
-        }
-
-        if (pc->write->timer_set) {
-            ngx_del_timer(pc->write);
         }
 
         ngx_stream_proxy_init_upstream(s);
@@ -1526,8 +1494,6 @@ ngx_stream_proxy_connect_handler(ngx_event_t *ev)
         return;
     }
 
-    ngx_del_timer(c->write);
-
     ngx_log_debug0(NGX_LOG_DEBUG_STREAM, c->log, 0,
                    "stream proxy connect upstream");
 
@@ -1589,7 +1555,7 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
     ngx_uint_t do_write)
 {
     char                         *recv_action, *send_action;
-    off_t                        *received, limit;
+    off_t                        *received, limit, sent;
     size_t                        size, limit_rate;
     ssize_t                       n;
     ngx_buf_t                    *b;
@@ -1647,6 +1613,14 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
         busy = &u->upstream_busy;
         recv_action = "proxying and reading from client";
         send_action = "proxying and sending to upstream";
+    }
+
+#if (NGX_SUPPRESS_WARN)
+    sent = 0;
+#endif
+
+    if (dst) {
+        sent = dst->sent;
     }
 
     for ( ;; ) {
@@ -1792,7 +1766,9 @@ ngx_stream_proxy_process(ngx_stream_session_t *s, ngx_uint_t from_upstream,
         }
 
         if (!c->read->delayed && !pc->read->delayed) {
-            ngx_add_timer(c->write, pscf->timeout);
+            if (dst->sent != sent || !c->write->timer_set) {
+                ngx_add_timer(c->write, pscf->timeout);
+            }
 
         } else if (c->write->timer_set) {
             ngx_del_timer(c->write);
@@ -2518,3 +2494,42 @@ ngx_stream_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     return NGX_CONF_OK;
 }
+
+
+#if (NGX_STREAM_SSL)
+
+static char *
+ngx_stream_proxy_ssl_password_file(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_stream_proxy_srv_conf_t *pscf = conf;
+
+    ngx_str_t  *value;
+
+    if (pscf->ssl_passwords != NGX_CONF_UNSET_PTR) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    pscf->ssl_passwords = ngx_ssl_read_password_file(cf, &value[1]);
+
+    if (pscf->ssl_passwords == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_stream_proxy_ssl_conf_command_check(ngx_conf_t *cf, void *post, void *data)
+{
+#ifndef SSL_CONF_FLAG_FILE
+    return "is not supported on this platform";
+#else
+    return NGX_CONF_OK;
+#endif
+}
+
+#endif
