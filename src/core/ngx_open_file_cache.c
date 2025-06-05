@@ -41,7 +41,8 @@ static void ngx_open_file_add_event(ngx_open_file_cache_t *cache,
     ngx_cached_open_file_t *file, ngx_open_file_info_t *of, ngx_log_t *log);
 static void ngx_open_file_cleanup(void *data);
 static void ngx_close_cached_file(ngx_open_file_cache_t *cache,
-    ngx_cached_open_file_t *file, ngx_uint_t min_uses, ngx_log_t *log);
+    ngx_cached_open_file_t *file, ngx_uint_t min_uses, ngx_uint_t directio_off,
+    ngx_log_t *log);
 static void ngx_open_file_del_event(ngx_cached_open_file_t *file);
 static void ngx_expire_old_cached_files(ngx_open_file_cache_t *cache,
     ngx_uint_t n, ngx_log_t *log);
@@ -51,6 +52,8 @@ static ngx_cached_open_file_t *
     ngx_open_file_lookup(ngx_open_file_cache_t *cache, ngx_str_t *name,
     uint32_t hash);
 static void ngx_open_file_cache_remove(ngx_event_t *ev);
+static ngx_open_file_cache_cleanup_t *
+    ngx_open_file_cache_get_cleanup(ngx_pool_t *p, ngx_fd_t fd);
 
 
 ngx_open_file_cache_t *
@@ -118,7 +121,7 @@ ngx_open_file_cache_cleanup(void *data)
         if (!file->err && !file->is_dir) {
             file->close = 1;
             file->count = 0;
-            ngx_close_cached_file(cache, file, 0, ngx_cycle->log);
+            ngx_close_cached_file(cache, file, 0, 0, ngx_cycle->log);
 
         } else {
             ngx_free(file->name);
@@ -147,6 +150,7 @@ ngx_open_cached_file(ngx_open_file_cache_t *cache, ngx_str_t *name,
     time_t                          now;
     uint32_t                        hash;
     ngx_int_t                       rc;
+    ngx_uint_t                      uses;
     ngx_file_info_t                 fi;
     ngx_pool_cleanup_t             *cln;
     ngx_cached_open_file_t         *file;
@@ -227,15 +231,15 @@ ngx_open_cached_file(ngx_open_file_cache_t *cache, ngx_str_t *name,
             goto add_event;
         }
 
-        if (file->use_event
-            || (file->event == NULL
-                && (of->uniq == 0 || of->uniq == file->uniq)
-                && now - file->created < of->valid
+        if ((file->use_event
+             || (file->event == NULL
+                 && (of->uniq == 0 || of->uniq == file->uniq)
+                 && now - file->created < of->valid))
 #if (NGX_HAVE_OPENAT)
-                && of->disable_symlinks == file->disable_symlinks
-                && of->disable_symlinks_from == file->disable_symlinks_from
+            && of->disable_symlinks == file->disable_symlinks
+            && of->disable_symlinks_from == file->disable_symlinks_from
 #endif
-            ))
+            )
         {
             if (file->err == 0) {
 
@@ -348,6 +352,8 @@ ngx_open_cached_file(ngx_open_file_cache_t *cache, ngx_str_t *name,
 
         file->close = 1;
 
+        uses = file->uses;
+
         goto create;
     }
 
@@ -358,6 +364,8 @@ ngx_open_cached_file(ngx_open_file_cache_t *cache, ngx_str_t *name,
     if (rc != NGX_OK && (of->err == 0 || !of->errors)) {
         goto failed;
     }
+
+    uses = 1;
 
 create:
 
@@ -387,10 +395,11 @@ create:
 
     cache->current++;
 
-    file->uses = 1;
+    file->uses = uses;
     file->count = 0;
     file->use_event = 0;
     file->event = NULL;
+    file->directio_off = of->is_directio_off;
 
 add_event:
 
@@ -444,6 +453,7 @@ found:
             ofcln->cache = cache;
             ofcln->file = file;
             ofcln->min_uses = of->min_uses;
+            ofcln->directio_off = of->is_directio_off;
             ofcln->log = pool->log;
         }
 
@@ -974,7 +984,7 @@ ngx_open_file_add_event(ngx_open_file_cache_t *cache,
     file->use_event = 0;
 
     file->event = ngx_calloc(sizeof(ngx_event_t), log);
-    if (file->event== NULL) {
+    if (file->event == NULL) {
         return;
     }
 
@@ -1027,7 +1037,8 @@ ngx_open_file_cleanup(void *data)
 
     c->file->count--;
 
-    ngx_close_cached_file(c->cache, c->file, c->min_uses, c->log);
+    ngx_close_cached_file(c->cache, c->file, c->min_uses, c->directio_off,
+                          c->log);
 
     /* drop one or two expired open files */
     ngx_expire_old_cached_files(c->cache, 1, c->log);
@@ -1036,11 +1047,24 @@ ngx_open_file_cleanup(void *data)
 
 static void
 ngx_close_cached_file(ngx_open_file_cache_t *cache,
-    ngx_cached_open_file_t *file, ngx_uint_t min_uses, ngx_log_t *log)
+    ngx_cached_open_file_t *file, ngx_uint_t min_uses, ngx_uint_t directio_off,
+    ngx_log_t *log)
 {
     ngx_log_debug5(NGX_LOG_DEBUG_CORE, log, 0,
                    "close cached open file: %s, fd:%d, c:%d, u:%d, %d",
                    file->name, file->fd, file->count, file->uses, file->close);
+
+    if (directio_off) {
+        file->directio_off--;
+
+        if (file->directio_off == 0) {
+            if (ngx_directio_on(file->fd) == NGX_FILE_ERROR) {
+                ngx_log_error(NGX_LOG_ALERT, log, ngx_errno,
+                              ngx_directio_on_n " \"%s\" failed",
+                              file->name);
+            }
+        }
+    }
 
     if (!file->close) {
 
@@ -1138,7 +1162,7 @@ ngx_expire_old_cached_files(ngx_open_file_cache_t *cache, ngx_uint_t n,
 
         if (!file->err && !file->is_dir) {
             file->close = 1;
-            ngx_close_cached_file(cache, file, 0, log);
+            ngx_close_cached_file(cache, file, 0, 0, log);
 
         } else {
             ngx_free(file->name);
@@ -1250,10 +1274,92 @@ ngx_open_file_cache_remove(ngx_event_t *ev)
 
     file->close = 1;
 
-    ngx_close_cached_file(fev->cache, file, 0, ev->log);
+    ngx_close_cached_file(fev->cache, file, 0, 0, ev->log);
 
     /* free memory only when fev->cache and fev->file are already not needed */
 
     ngx_free(ev->data);
     ngx_free(ev);
+}
+
+
+ngx_int_t
+ngx_open_file_directio_on(ngx_fd_t fd, ngx_pool_t *pool)
+{
+    ngx_open_file_cache_cleanup_t  *c;
+
+    /*
+     * DIRECTIO is only re-enabled on a file descriptor
+     * when there are no outstanding requests to switch it off
+     */
+
+    c = ngx_open_file_cache_get_cleanup(pool, fd);
+
+    if (c) {
+        if (!c->directio_off) {
+            return NGX_OK;
+        }
+
+        c->directio_off = 0;
+        c->file->directio_off--;
+
+        if (c->file->directio_off > 0) {
+            return NGX_OK;
+        }
+    }
+
+    if (ngx_directio_on(fd) == NGX_FILE_ERROR) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_open_file_directio_off(ngx_fd_t fd, ngx_pool_t *pool)
+{
+    ngx_open_file_cache_cleanup_t  *c;
+
+    c = ngx_open_file_cache_get_cleanup(pool, fd);
+
+    if (c) {
+        if (c->directio_off) {
+            return NGX_OK;
+        }
+
+        c->directio_off = 1;
+        c->file->directio_off++;
+
+        if (c->file->directio_off > 1) {
+            return NGX_OK;
+        }
+    }
+
+    if (ngx_directio_off(fd) == NGX_FILE_ERROR) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_open_file_cache_cleanup_t *
+ngx_open_file_cache_get_cleanup(ngx_pool_t *p, ngx_fd_t fd)
+{
+    ngx_pool_cleanup_t             *cln;
+    ngx_open_file_cache_cleanup_t  *c;
+
+    for (cln = p->cleanup; cln; cln = cln->next) {
+        if (cln->handler == ngx_open_file_cleanup) {
+
+            c = cln->data;
+
+            if (c->file->fd == fd) {
+                return c;
+            }
+        }
+    }
+
+    return NULL;
 }
