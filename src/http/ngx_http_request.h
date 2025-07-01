@@ -303,6 +303,8 @@ typedef struct {
     ngx_buf_t                        *buf;
     off_t                             rest;
     off_t                             received;
+    ngx_msec_t                        rate_last;
+    off_t                             rate_excess;
     ngx_chain_t                      *free;
     ngx_chain_t                      *busy;
     ngx_http_chunked_t               *chunked;
@@ -409,9 +411,8 @@ struct ngx_http_request_s {
 
     ngx_http_request_body_t          *request_body;
 
-    time_t                            lingering_time;
-    time_t                            start_sec;
-    ngx_msec_t                        start_msec;
+    ngx_msec_t                        lingering_time;
+    ngx_msec_t                        start_time;
 
     ngx_uint_t                        method;
     ngx_uint_t                        http_version;
@@ -447,6 +448,12 @@ struct ngx_http_request_s {
 
     size_t                            limit_rate;
     size_t                            limit_rate_after;
+
+    ngx_msec_t                        limit_last;
+    off_t                             limit_excess;
+
+    ngx_msec_t                        send_min_last;
+    off_t                             send_min_excess;
 
     /* used to learn the Apache compatible response length without a header */
     size_t                            header_size;

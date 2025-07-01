@@ -3271,7 +3271,6 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
     p->pool = r->pool;
     p->log = c->log;
     p->limit_rate = u->conf->limit_rate;
-    p->start_sec = ngx_time();
 
     p->cacheable = u->cacheable || u->store;
 
@@ -3369,6 +3368,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
     p->read_timeout = u->conf->read_timeout;
     p->send_timeout = clcf->send_timeout;
+    p->send_min_rate = clcf->send_min_rate;
     p->send_lowat = clcf->send_lowat;
 
     p->length = -1;
@@ -3708,9 +3708,7 @@ ngx_http_upstream_process_upgraded(ngx_http_request_t *r,
     }
 
     if (downstream->write->active && !downstream->write->ready) {
-        if (downstream->sent != dsent || !downstream->write->timer_set) {
-            ngx_add_timer(downstream->write, clcf->send_timeout);
-        }
+        ngx_http_send_timeout(r, downstream->sent - dsent);
 
     } else if (downstream->write->timer_set) {
         ngx_del_timer(downstream->write);
@@ -3877,9 +3875,7 @@ ngx_http_upstream_process_non_buffered_request(ngx_http_request_t *r,
     }
 
     if (downstream->write->active && !downstream->write->ready) {
-        if (downstream->sent != sent || !downstream->write->timer_set) {
-            ngx_add_timer(downstream->write, clcf->send_timeout);
-        }
+        ngx_http_send_timeout(r, downstream->sent - sent);
 
     } else if (downstream->write->timer_set) {
         ngx_del_timer(downstream->write);
