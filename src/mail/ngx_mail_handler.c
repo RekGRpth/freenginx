@@ -776,6 +776,8 @@ ngx_mail_auth_xoauth2(ngx_mail_session_t *s, ngx_connection_t *c, ngx_uint_t n)
             s->quit = s->auth_quit;
             s->state = 0;
             s->mail_state = 0;
+            s->login.len = 0;
+            s->passwd.len = 0;
             ngx_str_null(&s->auth_err);
             return NGX_OK;
         }
@@ -885,6 +887,8 @@ ngx_mail_auth_oauthbearer(ngx_mail_session_t *s, ngx_connection_t *c,
             s->quit = s->auth_quit;
             s->state = 0;
             s->mail_state = 0;
+            s->login.len = 0;
+            s->passwd.len = 0;
             ngx_str_null(&s->auth_err);
             return NGX_OK;
         }
@@ -1482,19 +1486,15 @@ ngx_mail_log_error(ngx_log_t *log, u_char *buf, size_t len)
     len -= p - buf;
     buf = p;
 
-    if (s->login.len == 0) {
-        return p;
+    if (s->login.len) {
+        p = ngx_snprintf(buf, len, ", login: \"%V\"", &s->login);
+        len -= p - buf;
+        buf = p;
     }
 
-    p = ngx_snprintf(buf, len, ", login: \"%V\"", &s->login);
-    len -= p - buf;
-    buf = p;
-
-    if (s->proxy == NULL) {
-        return p;
+    if (s->proxy) {
+        p = ngx_snprintf(buf, len, ", upstream: %V", s->proxy->upstream.name);
     }
-
-    p = ngx_snprintf(buf, len, ", upstream: %V", s->proxy->upstream.name);
 
     return p;
 }
