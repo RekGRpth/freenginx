@@ -392,7 +392,16 @@ ngx_http_parse_request_line(ngx_http_request_t *r, ngx_buf_t *b)
                 break;
             }
 
-            if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
+            if (ch >= '0' && ch <= '9') {
+                break;
+            }
+
+            if (ch == '.' || ch == '-' || ch == '_' || ch == '~'
+                || ch == '!' || ch == '$' || ch == '&' || ch == '\''
+                || ch == '(' || ch == ')' || ch == '*' || ch == '+'
+                || ch == ',' || ch == ';' || ch == '=' || ch == '%')
+            {
+                /* unreserved, sub-delims, pct-encoded */
                 break;
             }
 
@@ -441,30 +450,22 @@ ngx_http_parse_request_line(ngx_http_request_t *r, ngx_buf_t *b)
                 break;
             }
 
-            switch (ch) {
-            case ':':
+            if (ch == ':') {
                 break;
+            }
+
+            if (ch == '.' || ch == '-' || ch == '_' || ch == '~'
+                || ch == '!' || ch == '$' || ch == '&' || ch == '\''
+                || ch == '(' || ch == ')' || ch == '*' || ch == '+'
+                || ch == ',' || ch == ';' || ch == '=' || ch == '%')
+            {
+                /* unreserved, sub-delims, pct-encoded */
+                break;
+            }
+
+            switch (ch) {
             case ']':
                 state = sw_host_end;
-                break;
-            case '-':
-            case '.':
-            case '_':
-            case '~':
-                /* unreserved */
-                break;
-            case '!':
-            case '$':
-            case '&':
-            case '\'':
-            case '(':
-            case ')':
-            case '*':
-            case '+':
-            case ',':
-            case ';':
-            case '=':
-                /* sub-delims */
                 break;
             default:
                 return NGX_HTTP_PARSE_INVALID_REQUEST;
