@@ -1278,6 +1278,9 @@ ngx_ssl_verify_callback(int ok, X509_STORE_CTX *x509_store)
     char              *subject, *issuer;
     int                err, depth;
     X509              *cert;
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+    const
+#endif
     X509_NAME         *sname, *iname;
     ngx_connection_t  *c;
     ngx_ssl_conn_t    *ssl_conn;
@@ -2427,6 +2430,17 @@ ngx_ssl_handshake(ngx_connection_t *c)
         return NGX_AGAIN;
     }
 
+    if (sslerr == SSL_ERROR_SYSCALL && ERR_peek_error() == 0 && err == 0) {
+
+        /*
+         * OpenSSL up to 3.0 returns SSL_ERROR_SYSCALL
+         * without an error queue and with errno set to 0
+         * if connection is closed cleanly
+         */
+
+        sslerr = SSL_ERROR_ZERO_RETURN;
+    }
+
     if (sslerr != SSL_ERROR_SYSCALL) {
         err = 0;
     }
@@ -2435,7 +2449,7 @@ ngx_ssl_handshake(ngx_connection_t *c)
     c->ssl->no_send_shutdown = 1;
     c->read->eof = 1;
 
-    if (sslerr == SSL_ERROR_ZERO_RETURN || ERR_peek_error() == 0) {
+    if (sslerr == SSL_ERROR_ZERO_RETURN) {
         ngx_connection_error(c, err,
                              "peer closed connection in SSL handshake");
 
@@ -2578,6 +2592,17 @@ ngx_ssl_try_early_data(ngx_connection_t *c)
         return NGX_AGAIN;
     }
 
+    if (sslerr == SSL_ERROR_SYSCALL && ERR_peek_error() == 0 && err == 0) {
+
+        /*
+         * OpenSSL up to 3.0 returns SSL_ERROR_SYSCALL
+         * without an error queue and with errno set to 0
+         * if connection is closed cleanly
+         */
+
+        sslerr = SSL_ERROR_ZERO_RETURN;
+    }
+
     if (sslerr != SSL_ERROR_SYSCALL) {
         err = 0;
     }
@@ -2586,7 +2611,7 @@ ngx_ssl_try_early_data(ngx_connection_t *c)
     c->ssl->no_send_shutdown = 1;
     c->read->eof = 1;
 
-    if (sslerr == SSL_ERROR_ZERO_RETURN || ERR_peek_error() == 0) {
+    if (sslerr == SSL_ERROR_ZERO_RETURN) {
         ngx_connection_error(c, err,
                              "peer closed connection in SSL handshake");
 
@@ -3098,6 +3123,17 @@ ngx_ssl_handle_recv(ngx_connection_t *c, int n, ngx_err_t err)
         return NGX_AGAIN;
     }
 
+    if (sslerr == SSL_ERROR_SYSCALL && ERR_peek_error() == 0 && err == 0) {
+
+        /*
+         * OpenSSL up to 3.0 returns SSL_ERROR_SYSCALL
+         * without an error queue and with errno set to 0
+         * if connection is closed cleanly
+         */
+
+        sslerr = SSL_ERROR_ZERO_RETURN;
+    }
+
     if (sslerr != SSL_ERROR_SYSCALL) {
         err = 0;
     }
@@ -3105,7 +3141,7 @@ ngx_ssl_handle_recv(ngx_connection_t *c, int n, ngx_err_t err)
     c->ssl->no_wait_shutdown = 1;
     c->ssl->no_send_shutdown = 1;
 
-    if (sslerr == SSL_ERROR_ZERO_RETURN || ERR_peek_error() == 0) {
+    if (sslerr == SSL_ERROR_ZERO_RETURN) {
         ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, 0,
                        "peer shutdown SSL cleanly");
         return NGX_DONE;
@@ -3342,6 +3378,12 @@ ngx_ssl_write(ngx_connection_t *c, u_char *data, size_t size)
     }
 #endif
 
+    if (c->ssl->last == NGX_ERROR) {
+        c->write->ready = 0;
+        c->write->error = 1;
+        return NGX_ERROR;
+    }
+
     ngx_ssl_clear_error(c->log);
 
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL to write: %uz", size);
@@ -3374,6 +3416,8 @@ ngx_ssl_write(ngx_connection_t *c, u_char *data, size_t size)
 
     sslerr = SSL_get_error(c->ssl->connection, n);
 
+    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL_get_error: %d", sslerr);
+
     if (sslerr == SSL_ERROR_ZERO_RETURN) {
 
         /*
@@ -3385,8 +3429,6 @@ ngx_ssl_write(ngx_connection_t *c, u_char *data, size_t size)
 
         sslerr = SSL_ERROR_SYSCALL;
     }
-
-    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL_get_error: %d", sslerr);
 
     if (sslerr == SSL_ERROR_WANT_WRITE) {
 
@@ -3453,6 +3495,12 @@ ngx_ssl_write_early(ngx_connection_t *c, u_char *data, size_t size)
     int        n, sslerr;
     size_t     written;
     ngx_err_t  err;
+
+    if (c->ssl->last == NGX_ERROR) {
+        c->write->ready = 0;
+        c->write->error = 1;
+        return NGX_ERROR;
+    }
 
     ngx_ssl_clear_error(c->log);
 
@@ -3652,6 +3700,8 @@ ngx_ssl_sendfile(ngx_connection_t *c, ngx_buf_t *file, size_t size)
 
     sslerr = SSL_get_error(c->ssl->connection, n);
 
+    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL_get_error: %d", sslerr);
+
     if (sslerr == SSL_ERROR_ZERO_RETURN) {
 
         /*
@@ -3675,8 +3725,6 @@ ngx_ssl_sendfile(ngx_connection_t *c, ngx_buf_t *file, size_t size)
 
         sslerr = SSL_ERROR_SYSCALL;
     }
-
-    ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0, "SSL_get_error: %d", sslerr);
 
     if (sslerr == SSL_ERROR_WANT_WRITE) {
 
@@ -3889,7 +3937,18 @@ ngx_ssl_shutdown(ngx_connection_t *c)
             return NGX_AGAIN;
         }
 
-        if (sslerr == SSL_ERROR_ZERO_RETURN || ERR_peek_error() == 0) {
+        if (sslerr == SSL_ERROR_SYSCALL && ERR_peek_error() == 0 && err == 0) {
+
+            /*
+             * OpenSSL up to 3.0 returns SSL_ERROR_SYSCALL
+             * without an error queue and with errno set to 0
+             * if connection is closed cleanly
+             */
+
+            sslerr = SSL_ERROR_ZERO_RETURN;
+        }
+
+        if (sslerr == SSL_ERROR_ZERO_RETURN) {
             goto done;
         }
 
@@ -6328,6 +6387,9 @@ ngx_ssl_get_subject_dn(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
 {
     BIO        *bio;
     X509       *cert;
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+    const
+#endif
     X509_NAME  *name;
 
     s->len = 0;
@@ -6382,6 +6444,9 @@ ngx_ssl_get_issuer_dn(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
 {
     BIO        *bio;
     X509       *cert;
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+    const
+#endif
     X509_NAME  *name;
 
     s->len = 0;
@@ -6438,6 +6503,9 @@ ngx_ssl_get_subject_dn_legacy(ngx_connection_t *c, ngx_pool_t *pool,
     char       *p;
     size_t      len;
     X509       *cert;
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+    const
+#endif
     X509_NAME  *name;
 
     s->len = 0;
@@ -6486,6 +6554,9 @@ ngx_ssl_get_issuer_dn_legacy(ngx_connection_t *c, ngx_pool_t *pool,
     char       *p;
     size_t      len;
     X509       *cert;
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L
+    const
+#endif
     X509_NAME  *name;
 
     s->len = 0;
