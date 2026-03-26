@@ -227,6 +227,7 @@ static void
 ngx_mail_proxy_pop3_handler(ngx_event_t *rev)
 {
     u_char                 *p;
+    ssize_t                 n;
     ngx_int_t               rc;
     ngx_str_t               line;
     ngx_connection_t       *c;
@@ -247,7 +248,7 @@ ngx_mail_proxy_pop3_handler(ngx_event_t *rev)
         return;
     }
 
-    if (s->proxy->proxy_protocol) {
+    if (s->proxy->proxy_protocol || !c->write->ready) {
         ngx_log_debug0(NGX_LOG_DEBUG_MAIL, c->log, 0, "mail proxy pop3 busy");
 
         if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
@@ -344,11 +345,20 @@ ngx_mail_proxy_pop3_handler(ngx_event_t *rev)
         break;
     }
 
-    if (c->send(c, line.data, line.len) < (ssize_t) line.len) {
+    n = c->send(c, line.data, line.len);
+
+    if (n == NGX_ERROR) {
+        ngx_mail_proxy_internal_server_error(s);
+        return;
+    }
+
+    if (n != (ssize_t) line.len) {
         /*
          * we treat the incomplete sending as NGX_ERROR
          * because it is very strange here
          */
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "sent only %z of %uz", n, line.len);
         ngx_mail_proxy_internal_server_error(s);
         return;
     }
@@ -367,6 +377,7 @@ static void
 ngx_mail_proxy_imap_handler(ngx_event_t *rev)
 {
     u_char                 *p;
+    ssize_t                 n;
     ngx_int_t               rc;
     ngx_str_t               line;
     ngx_connection_t       *c;
@@ -387,7 +398,7 @@ ngx_mail_proxy_imap_handler(ngx_event_t *rev)
         return;
     }
 
-    if (s->proxy->proxy_protocol) {
+    if (s->proxy->proxy_protocol || !c->write->ready) {
         ngx_log_debug0(NGX_LOG_DEBUG_MAIL, c->log, 0, "mail proxy imap busy");
 
         if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
@@ -505,11 +516,20 @@ ngx_mail_proxy_imap_handler(ngx_event_t *rev)
         break;
     }
 
-    if (c->send(c, line.data, line.len) < (ssize_t) line.len) {
+    n = c->send(c, line.data, line.len);
+
+    if (n == NGX_ERROR) {
+        ngx_mail_proxy_internal_server_error(s);
+        return;
+    }
+
+    if (n != (ssize_t) line.len) {
         /*
          * we treat the incomplete sending as NGX_ERROR
          * because it is very strange here
          */
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "sent only %z of %uz", n, line.len);
         ngx_mail_proxy_internal_server_error(s);
         return;
     }
@@ -528,6 +548,7 @@ static void
 ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
 {
     u_char                    *p;
+    ssize_t                    n;
     ngx_int_t                  rc;
     ngx_str_t                  line, auth, encoded;
     ngx_buf_t                 *b;
@@ -550,7 +571,7 @@ ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
         return;
     }
 
-    if (s->proxy->proxy_protocol) {
+    if (s->proxy->proxy_protocol || !c->write->ready) {
         ngx_log_debug0(NGX_LOG_DEBUG_MAIL, c->log, 0, "mail proxy smtp busy");
 
         if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
@@ -842,11 +863,20 @@ ngx_mail_proxy_smtp_handler(ngx_event_t *rev)
         break;
     }
 
-    if (c->send(c, line.data, line.len) < (ssize_t) line.len) {
+    n = c->send(c, line.data, line.len);
+
+    if (n == NGX_ERROR) {
+        ngx_mail_proxy_internal_server_error(s);
+        return;
+    }
+
+    if (n != (ssize_t) line.len) {
         /*
          * we treat the incomplete sending as NGX_ERROR
          * because it is very strange here
          */
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                      "sent only %z of %uz", n, line.len);
         ngx_mail_proxy_internal_server_error(s);
         return;
     }
@@ -882,6 +912,7 @@ ngx_mail_proxy_write_handler(ngx_event_t *wev)
 
     if (ngx_handle_write_event(wev, 0) != NGX_OK) {
         ngx_mail_proxy_internal_server_error(s);
+        return;
     }
 
     if (c->read->ready) {
