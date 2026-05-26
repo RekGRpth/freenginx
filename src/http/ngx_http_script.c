@@ -23,7 +23,6 @@ static ngx_int_t ngx_http_script_add_capture_code(ngx_http_script_compile_t *sc,
 #endif
 static ngx_int_t
     ngx_http_script_add_full_name_code(ngx_http_script_compile_t *sc);
-static size_t ngx_http_script_full_name_len_code(ngx_http_script_engine_t *e);
 static void ngx_http_script_full_name_code(ngx_http_script_engine_t *e);
 
 
@@ -195,12 +194,10 @@ ngx_http_compile_complex_value(ngx_http_compile_complex_value_t *ccv)
         return NGX_ERROR;
     }
 
-    n = (nv * (2 * sizeof(ngx_http_script_copy_code_t)
-                   + sizeof(ngx_http_script_var_code_t))
-                + sizeof(uintptr_t)
-                + v->len
-                + sizeof(uintptr_t) - 1)
-            & ~(sizeof(uintptr_t) - 1);
+    n = nv * (2 * sizeof(ngx_http_script_copy_code_t)
+                  + sizeof(ngx_http_script_var_code_t))
+        + sizeof(uintptr_t)
+        + ngx_align(v->len, sizeof(uintptr_t));
 
     if (ngx_array_init(&values, ccv->cf->pool, n, 1) != NGX_OK) {
         return NGX_ERROR;
@@ -483,12 +480,6 @@ ngx_http_script_compile(ngx_http_script_compile_t *sc)
 
                 n = sc->source->data[i] - '0';
 
-                if (sc->captures_mask & ((ngx_uint_t) 1 << n)) {
-                    sc->dup_capture = 1;
-                }
-
-                sc->captures_mask |= (ngx_uint_t) 1 << n;
-
                 if (ngx_http_script_add_capture_code(sc, n) != NGX_OK) {
                     return NGX_ERROR;
                 }
@@ -703,12 +694,10 @@ ngx_http_script_init_arrays(ngx_http_script_compile_t *sc)
     }
 
     if (*sc->values == NULL) {
-        n = (sc->variables * (2 * sizeof(ngx_http_script_copy_code_t)
-                              + sizeof(ngx_http_script_var_code_t))
-                + sizeof(uintptr_t)
-                + sc->source->len
-                + sizeof(uintptr_t) - 1)
-            & ~(sizeof(uintptr_t) - 1);
+        n = sc->variables * (2 * sizeof(ngx_http_script_copy_code_t)
+                             + sizeof(ngx_http_script_var_code_t))
+            + sizeof(uintptr_t)
+            + ngx_align(sc->source->len, sizeof(uintptr_t));
 
         *sc->values = ngx_array_create(sc->cf->pool, n, 1);
         if (*sc->values == NULL) {
@@ -826,8 +815,8 @@ ngx_http_script_add_copy_code(ngx_http_script_compile_t *sc, ngx_str_t *value,
                                                  ngx_http_script_copy_len_code;
     code->len = len;
 
-    size = (sizeof(ngx_http_script_copy_code_t) + len + sizeof(uintptr_t) - 1)
-            & ~(sizeof(uintptr_t) - 1);
+    size = sizeof(ngx_http_script_copy_code_t)
+           + ngx_align(len, sizeof(uintptr_t));
 
     code = ngx_http_script_add_code(*sc->values, size, &sc->main);
     if (code == NULL) {
@@ -878,7 +867,7 @@ ngx_http_script_copy_code(ngx_http_script_engine_t *e)
     }
 
     e->ip += sizeof(ngx_http_script_copy_code_t)
-          + ((code->len + sizeof(uintptr_t) - 1) & ~(sizeof(uintptr_t) - 1));
+          + ngx_align(code->len, sizeof(uintptr_t));
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, e->request->connection->log, 0,
                    "http script copy: \"%*s\"", e->pos - p, p);
@@ -1039,7 +1028,6 @@ ngx_http_script_regex_start_code(ngx_http_script_engine_t *e)
 {
     size_t                         len;
     ngx_int_t                      rc;
-    ngx_uint_t                     n;
     ngx_http_request_t            *r;
     ngx_http_script_engine_t       le;
     ngx_http_script_len_code_pt    lcode;
@@ -1140,38 +1128,22 @@ ngx_http_script_regex_start_code(ngx_http_script_engine_t *e)
         }
     }
 
-    if (code->lengths == NULL) {
-        e->buf.len = code->size;
+    ngx_memzero(&le, sizeof(ngx_http_script_engine_t));
 
-        if (code->uri) {
-            if (r->ncaptures && (r->quoted_uri || r->plus_in_uri)) {
-                e->buf.len += 2 * ngx_escape_uri(NULL, r->uri.data, r->uri.len,
-                                                 NGX_ESCAPE_ARGS);
-            }
-        }
+    le.ip = code->lengths->elts;
+    le.line = e->line;
+    le.request = r;
+    le.quote = code->redirect;
+    le.is_args = e->is_args;
 
-        for (n = 2; n < r->ncaptures; n += 2) {
-            e->buf.len += r->captures[n + 1] - r->captures[n];
-        }
+    len = 0;
 
-    } else {
-        ngx_memzero(&le, sizeof(ngx_http_script_engine_t));
-
-        le.ip = code->lengths->elts;
-        le.line = e->line;
-        le.request = r;
-        le.quote = code->redirect;
-        le.is_args = e->is_args;
-
-        len = 0;
-
-        while (*(uintptr_t *) le.ip) {
-            lcode = *(ngx_http_script_len_code_pt *) le.ip;
-            len += lcode(&le);
-        }
-
-        e->buf.len = len;
+    while (*(uintptr_t *) le.ip) {
+        lcode = *(ngx_http_script_len_code_pt *) le.ip;
+        len += lcode(&le);
     }
+
+    e->buf.len = len;
 
     if (code->add_args && r->args.len) {
         e->buf.len += r->args.len + 1;
@@ -1418,17 +1390,6 @@ ngx_http_script_add_full_name_code(ngx_http_script_compile_t *sc)
 {
     ngx_http_script_full_name_code_t  *code;
 
-    code = ngx_http_script_add_code(*sc->lengths,
-                                    sizeof(ngx_http_script_full_name_code_t),
-                                    NULL);
-    if (code == NULL) {
-        return NGX_ERROR;
-    }
-
-    code->code = (ngx_http_script_code_pt) (uintptr_t)
-                                            ngx_http_script_full_name_len_code;
-    code->conf_prefix = sc->conf_prefix;
-
     code = ngx_http_script_add_code(*sc->values,
                                     sizeof(ngx_http_script_full_name_code_t),
                                     &sc->main);
@@ -1440,20 +1401,6 @@ ngx_http_script_add_full_name_code(ngx_http_script_compile_t *sc)
     code->conf_prefix = sc->conf_prefix;
 
     return NGX_OK;
-}
-
-
-static size_t
-ngx_http_script_full_name_len_code(ngx_http_script_engine_t *e)
-{
-    ngx_http_script_full_name_code_t  *code;
-
-    code = (ngx_http_script_full_name_code_t *) e->ip;
-
-    e->ip += sizeof(ngx_http_script_full_name_code_t);
-
-    return code->conf_prefix ? ngx_cycle->conf_prefix.len:
-                               ngx_cycle->prefix.len;
 }
 
 
@@ -1628,6 +1575,14 @@ ngx_http_script_file_code(ngx_http_script_engine_t *e)
     path.data = value->data;
 
     r = e->request;
+
+    if (ngx_get_full_name(r->pool, (ngx_str_t *) &ngx_cycle->prefix, &path)
+        != NGX_OK)
+    {
+        e->ip = ngx_http_script_exit;
+        e->status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        return;
+    }
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http script file op %p \"%V\"", (void *) code->op, &path);
