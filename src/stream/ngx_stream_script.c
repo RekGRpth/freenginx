@@ -41,12 +41,7 @@ ngx_stream_script_flush_complex_value(ngx_stream_session_t *s,
 
     if (index) {
         while (*index != (ngx_uint_t) -1) {
-
-            if (s->variables[*index].no_cacheable) {
-                s->variables[*index].valid = 0;
-                s->variables[*index].not_found = 0;
-            }
-
+            (void) ngx_stream_get_flushed_variable(s, *index);
             index++;
         }
     }
@@ -492,20 +487,9 @@ u_char *
 ngx_stream_script_run(ngx_stream_session_t *s, ngx_str_t *value,
     void *code_lengths, size_t len, void *code_values)
 {
-    ngx_uint_t                      i;
-    ngx_stream_script_code_pt       code;
-    ngx_stream_script_engine_t      e;
-    ngx_stream_core_main_conf_t    *cmcf;
-    ngx_stream_script_len_code_pt   lcode;
-
-    cmcf = ngx_stream_get_module_main_conf(s, ngx_stream_core_module);
-
-    for (i = 0; i < cmcf->variables.nelts; i++) {
-        if (s->variables[i].no_cacheable) {
-            s->variables[i].valid = 0;
-            s->variables[i].not_found = 0;
-        }
-    }
+    ngx_stream_script_code_pt      code;
+    ngx_stream_script_engine_t     e;
+    ngx_stream_script_len_code_pt  lcode;
 
     ngx_memzero(&e, sizeof(ngx_stream_script_engine_t));
 
@@ -515,9 +499,16 @@ ngx_stream_script_run(ngx_stream_session_t *s, ngx_str_t *value,
 
     while (*(uintptr_t *) e.ip) {
         lcode = *(ngx_stream_script_len_code_pt *) e.ip;
-        len += lcode(&e);
+        (void) lcode(&e);
     }
 
+    e.ip = code_lengths;
+    e.flushed = 1;
+
+    while (*(uintptr_t *) e.ip) {
+        lcode = *(ngx_stream_script_len_code_pt *) e.ip;
+        len += lcode(&e);
+    }
 
     value->len = len;
     value->data = ngx_pnalloc(s->connection->pool, len);
@@ -551,10 +542,7 @@ ngx_stream_script_flush_no_cacheable_variables(ngx_stream_session_t *s,
     if (indices) {
         index = indices->elts;
         for (n = 0; n < indices->nelts; n++) {
-            if (s->variables[index[n]].no_cacheable) {
-                s->variables[index[n]].valid = 0;
-                s->variables[index[n]].not_found = 0;
-            }
+            (void) ngx_stream_get_flushed_variable(s, index[n]);
         }
     }
 }

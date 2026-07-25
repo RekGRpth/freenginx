@@ -41,12 +41,7 @@ ngx_http_script_flush_complex_value(ngx_http_request_t *r,
 
     if (index) {
         while (*index != (ngx_uint_t) -1) {
-
-            if (r->variables[*index].no_cacheable) {
-                r->variables[*index].valid = 0;
-                r->variables[*index].not_found = 0;
-            }
-
+            (void) ngx_http_get_flushed_variable(r, *index);
             index++;
         }
     }
@@ -611,32 +606,27 @@ u_char *
 ngx_http_script_run(ngx_http_request_t *r, ngx_str_t *value,
     void *code_lengths, size_t len, void *code_values)
 {
-    ngx_uint_t                    i;
-    ngx_http_script_code_pt       code;
-    ngx_http_script_len_code_pt   lcode;
-    ngx_http_script_engine_t      e;
-    ngx_http_core_main_conf_t    *cmcf;
-
-    cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
-
-    for (i = 0; i < cmcf->variables.nelts; i++) {
-        if (r->variables[i].no_cacheable) {
-            r->variables[i].valid = 0;
-            r->variables[i].not_found = 0;
-        }
-    }
+    ngx_http_script_code_pt      code;
+    ngx_http_script_engine_t     e;
+    ngx_http_script_len_code_pt  lcode;
 
     ngx_memzero(&e, sizeof(ngx_http_script_engine_t));
 
     e.ip = code_lengths;
     e.request = r;
+
+    while (*(uintptr_t *) e.ip) {
+        lcode = *(ngx_http_script_len_code_pt *) e.ip;
+        (void) lcode(&e);
+    }
+
+    e.ip = code_lengths;
     e.flushed = 1;
 
     while (*(uintptr_t *) e.ip) {
         lcode = *(ngx_http_script_len_code_pt *) e.ip;
         len += lcode(&e);
     }
-
 
     value->len = len;
     value->data = ngx_pnalloc(r->pool, len);
@@ -670,10 +660,7 @@ ngx_http_script_flush_no_cacheable_variables(ngx_http_request_t *r,
     if (indices) {
         index = indices->elts;
         for (n = 0; n < indices->nelts; n++) {
-            if (r->variables[index[n]].no_cacheable) {
-                r->variables[index[n]].valid = 0;
-                r->variables[index[n]].not_found = 0;
-            }
+            (void) ngx_http_get_flushed_variable(r, index[n]);
         }
     }
 }
@@ -1167,11 +1154,16 @@ ngx_http_script_regex_start_code(ngx_http_script_engine_t *e)
         }
     }
 
+    if (e->flushed) {
+        ngx_http_script_flush_no_cacheable_variables(e->request, code->flushes);
+    }
+
     ngx_memzero(&le, sizeof(ngx_http_script_engine_t));
 
     le.ip = code->lengths->elts;
     le.line = e->line;
     le.request = r;
+    le.flushed = e->flushed;
     le.quote = code->redirect;
     le.is_args = e->is_args;
 
@@ -1784,11 +1776,16 @@ ngx_http_script_complex_value_code(ngx_http_script_engine_t *e)
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, e->request->connection->log, 0,
                    "http script complex value");
 
+    if (e->flushed) {
+        ngx_http_script_flush_no_cacheable_variables(e->request, code->flushes);
+    }
+
     ngx_memzero(&le, sizeof(ngx_http_script_engine_t));
 
     le.ip = code->lengths->elts;
     le.line = e->line;
     le.request = e->request;
+    le.flushed = e->flushed;
     le.quote = e->quote;
     le.is_args = e->is_args;
 
