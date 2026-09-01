@@ -7,6 +7,96 @@
 <section title="freenginx">
 
 
+<changes ver="1.31.4" date="2026-09-01">
+
+<change type="bugfix">
+<para lang="ru">
+директива index использовала старые значения некэшируемых переменных.
+</para>
+<para lang="en">
+the "index" directive used old values of non-cacheable variables.
+</para>
+</change>
+
+<change type="bugfix">
+<para lang="ru">
+переменные с побочными эффектами
+могли приводить к некорректным результатам при подстановке переменных
+и сообщениям "no buffer space in script copy".
+</para>
+<para lang="en">
+variables with side effects
+might cause incorrect results during variable substitution
+and "no buffer space in script copy" alerts.
+</para>
+</change>
+
+<change type="bugfix">
+<para lang="ru">
+при использовании выделений в регулярных выражениях
+совместно с директивой proxy_cache_background_update
+или модулем ngx_http_slice_module
+в рабочем процессе мог произойти segmentation fault.
+</para>
+<para lang="en">
+a segmentation fault might occur in a worker process
+when using regular expression captures
+with the "proxy_cache_background_update" directive
+or the ngx_http_slice_module.
+</para>
+</change>
+
+<change type="bugfix">
+<para lang="ru">
+в модуле ngx_http_perl_module;
+ошибка появилась в 1.31.3.
+</para>
+<para lang="en">
+in the ngx_http_perl_module;
+the bug had appeared in 1.31.3.
+</para>
+</change>
+
+<change type="bugfix">
+<para lang="ru">
+при использовании SSI совместно с проксированием
+в логах могли появляться сообщения "header already sent".
+</para>
+<para lang="en">
+"header already sent" alerts might appear in logs
+when using SSI with proxying.
+</para>
+</change>
+
+<change type="bugfix">
+<para lang="ru">
+при использовании SSI и директивы gunzip
+часть данных, полученных от бэкенда при небуферизированном проксировании,
+могла не отправляться клиенту сразу.
+</para>
+<para lang="en">
+some data received from a backend with unbuffered proxying
+might not be sent to the client immediately
+when using SSI and the "gunzip" directive.
+</para>
+</change>
+
+<change type="change">
+<para lang="ru">
+теперь, если при буферизированном проксировании
+соединение с бэкендом завершается по таймауту,
+все ранее полученные от бэкенда данные отправляются клиенту.
+</para>
+<para lang="en">
+now, if a connection to a backend is closed due to a timeout
+during buffered proxying,
+all data previously received from the backend are sent to the client.
+</para>
+</change>
+
+</changes>
+
+
 <changes ver="1.31.3" date="2026-07-07">
 
 <change type="feature">
@@ -1298,7 +1388,7 @@ when a timeout occurred during reading a request body.
 
 <change type="bugfix">
 <para lang="ru">
-перенаправление ошибок 413 с помощью дерективы error_page
+перенаправление ошибок 413 с помощью директивы error_page
 работало некорректно при использовании HTTP/2 и HTTP/3.
 </para>
 <para lang="en">
@@ -25706,7 +25796,7 @@ nginx supports the request body size more than 2G.
 <change type="bugfix">
 <para lang="ru">
 если при использовании "satisfy_any on" клиент успешно проходил аутентификацию,
-в лог всё равно записалоcь сообщение "access forbidden by rule".
+в лог всё равно записалось сообщение "access forbidden by rule".
 </para>
 <para lang="en">
 if a client was successfully authorized using "satisfy_any on", then anyway
@@ -27292,7 +27382,7 @@ the "map" directive supports domain names in the ".domain.tld" form.
 
 <change type="bugfix">
 <para lang="ru">
-во время SSL handshake не иcпользовались таймауты;
+во время SSL handshake не использовались таймауты;
 ошибка появилась в 0.2.4.
 </para>
 <para lang="en">
