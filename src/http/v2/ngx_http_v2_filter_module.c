@@ -975,7 +975,7 @@ ngx_http_v2_send_chain(ngx_connection_t *fc, ngx_chain_t *in, off_t limit)
     cl = NULL;
 #endif
 
-    for ( ;; ) {
+    while (limit > 0) {
         if ((off_t) frame_size > limit) {
             frame_size = (size_t) limit;
         }
@@ -1070,10 +1070,6 @@ ngx_http_v2_send_chain(ngx_connection_t *fc, ngx_chain_t *in, off_t limit)
         }
 
         limit -= frame_size;
-
-        if (limit == 0) {
-            break;
-        }
     }
 
     if (offset) {
@@ -1582,7 +1578,14 @@ ngx_http_v2_filter_cleanup(void *data)
         }
     }
 
-    h2c->send_window += window;
+    if (window > NGX_HTTP_V2_MAX_WINDOW
+        || h2c->send_window > NGX_HTTP_V2_MAX_WINDOW - window)
+    {
+        h2c->send_window = NGX_HTTP_V2_MAX_WINDOW;
+
+    } else {
+        h2c->send_window += window;
+    }
 }
 
 
